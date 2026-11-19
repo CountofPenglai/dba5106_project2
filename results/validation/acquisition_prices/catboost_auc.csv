@@ -1,0 +1,3 @@
+model,validation_auc
+CatBoost_Logloss,0.6669300388356671
+CatBoost_L2,0.6668317861986877

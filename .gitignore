@@ -1,6 +1,6 @@
 # Download competition data locally; processed tables and row-level scores are reproducible.
 data/
-results/validation/*_scores.csv
+results/validation/**/*_scores.csv
 .venv/
 __pycache__/
 .ipynb_checkpoints/

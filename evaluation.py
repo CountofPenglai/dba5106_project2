@@ -38,18 +38,37 @@ def save_validation(y, scores, directory, family):
     return report
 
 
-if __name__ == "__main__":
-    from preprocessing import PROCESSED, ROOT
-
-    directory = ROOT / "results" / "validation"
-    labels = pd.read_csv(PROCESSED / "validation.csv", usecols=["RefId", "IsBadBuy"],
-                         index_col="RefId")["IsBadBuy"]
+def compare_families(directory, labels):
+    """Recompute family scores against the same validation IDs and outcomes."""
     frames = []
     for family in ("random_forest", "catboost"):
         frame = pd.read_csv(directory / f"{family}_scores.csv", index_col="RefId")
         if not frame.pop("IsBadBuy").equals(labels):
             raise ValueError(f"{family} results do not match the current validation set")
         frames.append(frame)
-    comparison = validation_auc(labels, pd.concat(frames, axis=1))
-    comparison.to_csv(directory / "comparison.csv", index_label="model")
+    return validation_auc(labels, pd.concat(frames, axis=1))
+
+
+if __name__ == "__main__":
+    import argparse
+    from preprocessing import PROCESSED, ROOT
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compare-prices", action="store_true",
+                        help="compare baseline and acquisition-price AUCs on the same validation cars")
+    args = parser.parse_args()
+
+    directory = ROOT / "results" / "validation"
+    labels = pd.read_csv(PROCESSED / "validation.csv", usecols=["RefId", "IsBadBuy"],
+                         index_col="RefId")["IsBadBuy"]
+    price_dir = directory / "acquisition_prices"
+    comparison = compare_families(price_dir, labels)
+    output = price_dir / "auc.csv"
+    if args.compare_prices:
+        baseline = compare_families(directory, labels)
+        comparison = pd.concat([baseline.rename("baseline_auc"), comparison.rename("with_prices_auc")], axis=1)
+        output = price_dir / "comparison.csv"
+        comparison["delta_auc"] = comparison.with_prices_auc - comparison.baseline_auc
+        comparison = comparison.sort_values("with_prices_auc", ascending=False)
+    comparison.to_csv(output, index_label="model")
     print(comparison.to_string())

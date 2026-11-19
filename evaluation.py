@@ -38,13 +38,21 @@ def save_validation(y, scores, directory, family):
     return report
 
 
-def compare_families(directory, labels):
+def compare_families(directory, labels,
+                     families=("glassbox", "random_forest", "catboost")):
     """Recompute family scores against the same validation IDs and outcomes."""
+    if len(families) != len(set(families)):
+        raise ValueError("Model families must be unique")
     frames = []
-    for family in ("random_forest", "catboost"):
+    model_names = set()
+    for family in families:
         frame = pd.read_csv(directory / f"{family}_scores.csv", index_col="RefId")
         if not frame.pop("IsBadBuy").equals(labels):
             raise ValueError(f"{family} results do not match the current validation set")
+        overlap = model_names.intersection(frame.columns)
+        if overlap:
+            raise ValueError(f"Duplicate model names across families: {sorted(overlap)}")
+        model_names.update(frame.columns)
         frames.append(frame)
     return validation_auc(labels, pd.concat(frames, axis=1))
 
@@ -65,8 +73,13 @@ if __name__ == "__main__":
     comparison = compare_families(price_dir, labels)
     output = price_dir / "auc.csv"
     if args.compare_prices:
-        baseline = compare_families(directory, labels)
-        comparison = pd.concat([baseline.rename("baseline_auc"), comparison.rename("with_prices_auc")], axis=1)
+        # The historical baseline predates Glassbox, so compare the two unchanged tree families only.
+        tree_families = ("random_forest", "catboost")
+        baseline = compare_families(directory, labels, families=tree_families)
+        priced_trees = compare_families(price_dir, labels, families=tree_families)
+        comparison = pd.concat(
+            [baseline.rename("baseline_auc"), priced_trees.rename("with_prices_auc")], axis=1
+        )
         output = price_dir / "comparison.csv"
         comparison["delta_auc"] = comparison.with_prices_auc - comparison.baseline_auc
         comparison = comparison.sort_values("with_prices_auc", ascending=False)

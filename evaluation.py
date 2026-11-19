@@ -38,15 +38,20 @@ def save_validation(y, scores, directory, family):
     return report
 
 
-def compare_families(directory, labels):
-    """Recompute family scores against the same validation IDs and outcomes."""
+def read_validation_scores(directory, labels):
+    """Read the unrounded scores and verify each file's validation IDs and outcomes."""
     frames = []
     for family in ("random_forest", "catboost"):
-        frame = pd.read_csv(directory / f"{family}_scores.csv", index_col="RefId")
+        frame = pd.read_csv(directory / f"{family}_scores.csv", index_col="RefId",
+                            float_precision="round_trip")
         if not frame.pop("IsBadBuy").equals(labels):
             raise ValueError(f"{family} results do not match the current validation set")
         frames.append(frame)
-    return validation_auc(labels, pd.concat(frames, axis=1))
+    return pd.concat(frames, axis=1, verify_integrity=True)
+
+
+def compare_families(directory, labels):
+    return validation_auc(labels, read_validation_scores(directory, labels))
 
 
 if __name__ == "__main__":

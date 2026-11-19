@@ -9,7 +9,7 @@ Use a Python 3.12 environment. Install `python -m pip install -r requirements.tx
 1. Run `python preprocessing.py` to generate the four shared tables under `data/processed/`.
 2. Start `jupyter lab`, open `random_forest.ipynb` and `catboost_trees.ipynb`, and run all cells in each (either order).
 3. Run `python evaluation.py` for the selected fifteen-field validation AUCs in `results/validation/acquisition_prices/auc.csv`. The per-family score files record each vehicle's RefId, outcome and unrounded scores.
-4. Run `python business_loss.py` to select a bidding threshold and reproduce the [validation cost comparison](results/validation/acquisition_prices/business_loss.csv) from the saved scores.
+4. Run `python business_loss.py` for the baseline models to select a bidding threshold and reproduce the [validation cost comparison](results/validation/acquisition_prices/business_loss.csv) from the saved scores.
 
 ## Validation experiment
 
@@ -52,4 +52,15 @@ Select the highest-AUC model among the four fifteen-field tree variants, then re
 
 These are estimated decision costs. The same training-median quote substitution used for modelling supplies missing or nonpositive quotes for 114 validation cars. The evaluator scores every distinct cutoff, including buying all and skipping all. Equal scores move together. If several cutoffs tie for minimum dollar loss, it keeps the highest one.
 
-CatBoost Logloss ranked first by validation AUC (0.66693). All three scenarios selected the same cutoff, approximately 0.48522. It skipped four of 11,022 validation cars, all recorded bad buys. At 20%, estimated loss was $1,548,297.40, compared with $1,561,908.00 for buying every car. The CSV retains the full-precision cutoff. These figures use the same validation data that selected the cutoff. The internal holdout and Kaggle test are outside this evaluation.
+Among the untuned variants, CatBoost Logloss ranked first by validation AUC (0.66693). All three scenarios selected the same cutoff, approximately 0.48522. It skipped four of 11,022 validation cars, all recorded bad buys. At 20%, estimated loss was $1,548,297.40, compared with $1,561,908.00 for buying every car. The CSV retains the full-precision cutoff. These figures use the same validation data that selected the cutoff. The internal holdout and Kaggle test are outside this evaluation.
+
+## Black-box hyperparameter tuning
+
+Run `python tune_trees.py` to reproduce both model families and the bidding decision. Each notebook also describes how to run its own family. The [tuned validation comparison](results/validation/acquisition_prices/tuned/comparison.csv) and [tuned decision costs](results/validation/acquisition_prices/tuned/business_loss.csv) sit alongside the per-family fold and finalist tables. The original results remain under `acquisition_prices/`.
+
+1. Screen each version over three expanding training windows. The later blocks cover December 2009–January 2010, February–March 2010, and April 1–June 8, 2010. Train on every earlier development date. Fit price and numeric medians, rare-model grouping and category encoding separately in each fold.
+2. Random forest tests depths 8, 14 and 20 with minimum leaf sizes 12 and 30. CatBoost tests depths 4, 6 and 8 with L2 leaf penalties 3 and 10. The output column `regularization` denotes the respective leaf size or penalty. Keep the two highest mean fold AUCs for each model variant plus its baseline, counting duplicate configurations once.
+3. Refit each finalist on all 51,191 training cars and select on the 11,022-car development validation set. Within 0.0001 of the best validation AUC for a variant, prefer shallower trees, then lower fold AUC standard deviation, then stronger regularization. Compare the four selected variants on validation AUC and use the highest-ranked variant's continuous scores for bidding.
+4. Set a global threshold using the same dollar loss and 10%, 20% and 30% scenarios as the baseline. Validation outcomes inform both model and threshold selection. The scores and decision savings are development results.
+
+The tuned CatBoost squared-error model had the highest validation AUC (0.66849, depth 8 and L2 leaf penalty 3). All three cost scenarios selected a risk-score threshold of 0.4306593054718898. The rule skipped eight bad buys and zero good cars in validation. At 20%, estimated savings against buying every car were $20,510.60, compared with $13,610.60 for the untuned decision rule.

@@ -1,0 +1,3 @@
+model,validation_auc
+RF_L2,0.6675179537240876
+RF_Logloss,0.66649130860673

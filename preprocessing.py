@@ -62,39 +62,57 @@ def prepare_data(raw=RAW, output=PROCESSED):
         print(f"{name:18} {len(frame):6,}  {frame.PurchDate.min():%Y-%m-%d} to {frame.PurchDate.max():%Y-%m-%d}")
 
 
-def load_development(output=PROCESSED, *, raw=RAW, include_prices=True):
-    """Load only the two labelled splits used by the modelling notebooks."""
-    def load(name):
-        frame = pd.read_csv(output / f"{name}.csv", index_col="RefId",
-                            dtype={c: str for c in CATEGORICAL}, keep_default_na=False)
-        return frame[FEATURES], frame[TARGET]
+def read_development_rows(output=PROCESSED, *, raw=RAW, include_prices=True):
+    """Read raw values only for the training and validation IDs, in split order."""
+    def split_ids(name):
+        return pd.Index(pd.read_csv(output / f"{name}.csv", usecols=["RefId"])["RefId"])
 
-    X_train, y_train = load("train")
-    X_val, y_val = load("validation")
-    # Read extra predictors only for the two development splits. The index-only
-    # pass lets the CSV parser skip all other rows, including internal holdout.
+    train_ids, val_ids = split_ids("train"), split_ids("validation")
+    selected = train_ids.append(val_ids)
+    if not selected.is_unique:
+        raise ValueError("Duplicate or overlapping development IDs")
     path = raw / "training.csv"
     ids = pd.read_csv(path, usecols=["RefId"])["RefId"]
-    selected = X_train.index.append(X_val.index)
-    skip_rows = ids.index[~ids.isin(selected)] + 1  # row 0 is the CSV header
-    fields = TRIM_FIELDS + (ACQUISITION_PRICES if include_prices else [])
-    extra = pd.read_csv(path, usecols=["RefId", *fields], skiprows=skip_rows,
-                        dtype={c: "string" for c in TRIM_FIELDS}).set_index("RefId")
-    if not extra.index.is_unique or len(selected.difference(extra.index)):
-        raise ValueError("Cannot match trim details to development vehicles")
-    for col in TRIM_FIELDS:
-        extra[col] = clean_category(extra[col])
-    if include_prices:
-        # A valid wholesale or retail quote must be positive. Each median is fit on training cars only.
-        quotes = extra[ACQUISITION_PRICES]
-        quotes = quotes.where(quotes.gt(0))
-        medians = quotes.loc[X_train.index].median()
-        if medians.isna().any():
-            raise ValueError("A price column has no positive training quotes")
-        extra[ACQUISITION_PRICES] = quotes.fillna(medians)
-    X_train = X_train.join(extra[fields], validate="one_to_one")
-    X_val = X_val.join(extra[fields], validate="one_to_one")
-    return X_train, y_train, X_val, y_val
+    skip = ids.index[~ids.isin(selected)] + 1
+    categories = CATEGORICAL + TRIM_FIELDS
+    prices = ACQUISITION_PRICES if include_prices else []
+    columns = ["RefId", "PurchDate", TARGET, *FEATURES, *TRIM_FIELDS, *prices]
+    rows = pd.read_csv(path, usecols=columns, skiprows=skip,
+                       dtype={name: "string" for name in categories}).set_index("RefId", verify_integrity=True)
+    rows["PurchDate"] = pd.to_datetime(rows["PurchDate"], format="%m/%d/%Y")
+    for name in categories:
+        rows[name] = clean_category(rows[name])
+    train, val = rows.loc[train_ids], rows.loc[val_ids]
+    if not (train.PurchDate.le(TRAIN_END).all() and val.PurchDate.gt(TRAIN_END).all()
+            and val.PurchDate.le(VALIDATION_END).all()):
+        raise ValueError("Development IDs do not match the chronological cutoffs")
+    return train, val
+
+
+def prepare_feature_pair(train, later, *, include_prices=True):
+    """Fit median substitution and rare-model grouping on the supplied history."""
+    prices = ACQUISITION_PRICES if include_prices else []
+    fields = FEATURES + TRIM_FIELDS + prices
+    history, future = train[fields].copy(), later[fields].copy()
+    numeric = NUMERIC + prices
+    for frame in (history, future):
+        if prices:
+            frame[prices] = frame[prices].where(frame[prices].gt(0))
+    medians = history[numeric].median()
+    if medians.isna().any():
+        raise ValueError("A numeric field has no usable training values")
+    counts = history["Model"].value_counts()
+    retained = set(counts.index[counts >= MIN_MODEL_COUNT]) | {"__MISSING__"}
+    for frame in (history, future):
+        frame[numeric] = frame[numeric].fillna(medians)
+        frame["Model"] = frame["Model"].where(frame["Model"].isin(retained), "__OTHER__")
+    return history, future
+
+
+def load_development(output=PROCESSED, *, raw=RAW, include_prices=True):
+    train, val = read_development_rows(output, raw=raw, include_prices=include_prices)
+    X_train, X_val = prepare_feature_pair(train, val, include_prices=include_prices)
+    return X_train, train[TARGET], X_val, val[TARGET]
 
 
 if __name__ == "__main__":

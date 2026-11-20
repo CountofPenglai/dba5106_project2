@@ -7,10 +7,10 @@ from sklearn.metrics import roc_auc_score
 
 from business_loss import threshold_sensitivity
 from evaluation import read_validation_scores, save_validation, validation_auc
-from preprocessing import ROOT, TARGET, TRAIN_END, prepare_feature_pair, read_development_rows
+from preprocessing import PRICE_RESULTS, TARGET, TRAIN_END, prepare_feature_pair, read_development_rows
 from tree_models import BASELINE, FAMILIES, encode_forest, make_tree, risk_scores
 
-OUT = ROOT / "results" / "validation" / "acquisition_prices" / "tuned"
+OUT = PRICE_RESULTS / "tuned"
 FOLDS = (("2009-11-30", "2010-01-31"), ("2010-01-31", "2010-03-31"),
          ("2010-03-31", TRAIN_END.strftime("%Y-%m-%d")))
 GRIDS = {"random_forest": ((8, 14, 20), (12, 30)), "catboost": ((4, 6, 8), (3, 10))}
@@ -20,7 +20,10 @@ AUC_TIE = 0.0001
 
 def inputs(family, train, val):
     history, later = prepare_feature_pair(train, val)
-    return encode_forest(history, later) if family == "random_forest" else (history, later)
+    labels = train.loc[history.index, TARGET]
+    if family == "random_forest":
+        history, later = encode_forest(history, later)
+    return history, labels, later
 
 
 def shortlist(rows, family):
@@ -42,14 +45,14 @@ def screen(family, train):
     for fold, (cutoff, end) in enumerate(FOLDS, 1):
         earlier = train.loc[train.PurchDate <= cutoff]
         later = train.loc[(train.PurchDate > cutoff) & (train.PurchDate <= end)]
-        x, v = inputs(family, earlier, later)
+        x, y, v = inputs(family, earlier, later)
         for name in FAMILIES[family]:
             for depth, reg in product(*GRIDS[family]):
                 model = make_tree(name, depth, reg)
-                model.fit(x, earlier[TARGET])
+                model.fit(x, y)
                 auc = roc_auc_score(later[TARGET], risk_scores(model, v))
                 results.append(dict(model=name, depth=depth, regularization=reg, fold=fold,
-                                    train_end=cutoff, fold_end=end, train_n=len(earlier),
+                                    train_end=cutoff, fold_end=end, train_n=len(y),
                                     fold_n=len(later), fold_auc=auc))
             print(f"Screened {name}, fold {fold}/3", flush=True)
     folds = pd.DataFrame(results)
@@ -59,7 +62,7 @@ def screen(family, train):
 
 def tune_family(family, train, val):
     cv = screen(family, train)
-    x, v = inputs(family, train, val)
+    x, y, v = inputs(family, train, val)
     selected_scores = pd.DataFrame(index=val.index)
     finalists = []
     for name in FAMILIES[family]:
@@ -68,9 +71,9 @@ def tune_family(family, train, val):
         for i, row in candidates.iterrows():
             depth, reg = int(row.depth), int(row.regularization)
             model = make_tree(name, depth, reg)
-            model.fit(x, train[TARGET])
+            model.fit(x, y)
             predictions[i] = risk_scores(model, v)
-            candidates.loc[i, "train_auc"] = roc_auc_score(train[TARGET], risk_scores(model, x))
+            candidates.loc[i, "train_auc"] = roc_auc_score(y, risk_scores(model, x))
             candidates.loc[i, "validation_auc"] = roc_auc_score(val[TARGET], predictions[i])
         winner = choose_finalist(candidates)
         selected_scores[name] = predictions[winner.name]

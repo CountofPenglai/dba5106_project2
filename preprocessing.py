@@ -4,6 +4,8 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
+VALIDATION_RESULTS = ROOT / "results" / "validation" / "drop_training_rows"
+PRICE_RESULTS = VALIDATION_RESULTS / "acquisition_prices"
 RAW = ROOT / "data" / "DontGetKicked"
 PROCESSED = ROOT / "data" / "processed"
 TARGET = "IsBadBuy"
@@ -62,13 +64,11 @@ def prepare_data(raw=RAW, output=PROCESSED):
         print(f"{name:18} {len(frame):6,}  {frame.PurchDate.min():%Y-%m-%d} to {frame.PurchDate.max():%Y-%m-%d}")
 
 
-def read_development_rows(output=PROCESSED, *, raw=RAW, include_prices=True):
-    """Read raw values only for the training and validation IDs, in split order."""
-    def split_ids(name):
-        return pd.Index(pd.read_csv(output / f"{name}.csv", usecols=["RefId"])["RefId"])
+def _split_ids(output, name):
+    return pd.Index(pd.read_csv(output / f"{name}.csv", usecols=["RefId"])["RefId"])
 
-    train_ids, val_ids = split_ids("train"), split_ids("validation")
-    selected = train_ids.append(val_ids)
+
+def _read_selected_rows(raw, selected, include_prices):
     if not selected.is_unique:
         raise ValueError("Duplicate or overlapping development IDs")
     path = raw / "training.csv"
@@ -82,6 +82,21 @@ def read_development_rows(output=PROCESSED, *, raw=RAW, include_prices=True):
     rows["PurchDate"] = pd.to_datetime(rows["PurchDate"], format="%m/%d/%Y")
     for name in categories:
         rows[name] = clean_category(rows[name])
+    return rows.loc[selected]
+
+
+def read_training_rows(output=PROCESSED, *, raw=RAW):
+    """Load only the training IDs, even when the raw file contains later auctions."""
+    train = _read_selected_rows(raw, _split_ids(output, "train"), include_prices=True)
+    if not train.PurchDate.le(TRAIN_END).all():
+        raise ValueError("Training IDs include dates beyond the training cutoff")
+    return train
+
+
+def read_development_rows(output=PROCESSED, *, raw=RAW, include_prices=True):
+    """Read raw values only for the training and validation IDs, in split order."""
+    train_ids, val_ids = _split_ids(output, "train"), _split_ids(output, "validation")
+    rows = _read_selected_rows(raw, train_ids.append(val_ids), include_prices)
     train, val = rows.loc[train_ids], rows.loc[val_ids]
     if not (train.PurchDate.le(TRAIN_END).all() and val.PurchDate.gt(TRAIN_END).all()
             and val.PurchDate.le(VALIDATION_END).all()):
@@ -89,10 +104,18 @@ def read_development_rows(output=PROCESSED, *, raw=RAW, include_prices=True):
     return train, val
 
 
-def prepare_feature_pair(train, later, *, include_prices=True):
-    """Fit median substitution and rare-model grouping on the supplied history."""
+def missing_quote_bundle(rows):
+    auction, clean, retail, clean_retail = ACQUISITION_PRICES
+    others_zero = rows[[auction, retail, clean_retail]].eq(0).fillna(False).all(axis=1)
+    return rows[clean].eq(1).fillna(False) & others_zero
+
+
+def prepare_feature_pair(train, later, *, include_prices=True, drop_invalid_quotes=True):
+    """Apply the training-row rule before fitting medians and rare-model groups."""
     prices = ACQUISITION_PRICES if include_prices else []
     fields = FEATURES + TRIM_FIELDS + prices
+    if drop_invalid_quotes and all(name in train for name in ACQUISITION_PRICES):
+        train = train.loc[~missing_quote_bundle(train)]
     history, future = train[fields].copy(), later[fields].copy()
     numeric = NUMERIC + prices
     for frame in (history, future):
@@ -110,9 +133,10 @@ def prepare_feature_pair(train, later, *, include_prices=True):
 
 
 def load_development(output=PROCESSED, *, raw=RAW, include_prices=True):
-    train, val = read_development_rows(output, raw=raw, include_prices=include_prices)
+    # Price-free comparisons use the same eligible cars while excluding quotes from the predictors.
+    train, val = read_development_rows(output, raw=raw)
     X_train, X_val = prepare_feature_pair(train, val, include_prices=include_prices)
-    return X_train, train[TARGET], X_val, val[TARGET]
+    return X_train, train.loc[X_train.index, TARGET], X_val, val[TARGET]
 
 
 if __name__ == "__main__":

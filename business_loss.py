@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from evaluation import _aligned, read_validation_scores, validation_auc
-from preprocessing import ROOT, load_development
+from preprocessing import PRICE_RESULTS, load_development
 
 AUCTION = "MMRAcquisitionAuctionAveragePrice"
 RETAIL = "MMRAcquisitionRetailAveragePrice"
@@ -64,7 +64,7 @@ def threshold_sensitivity(y, scores, prices, *, loss_rates=(0.10, 0.20, 0.30), n
 
 
 def main():
-    directory = ROOT / "results" / "validation" / "acquisition_prices"
+    directory = PRICE_RESULTS
     _, _, prices, labels = load_development()
     scores = read_validation_scores(directory, labels)
     ranking = validation_auc(labels, scores)

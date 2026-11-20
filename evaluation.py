@@ -56,17 +56,17 @@ def compare_families(directory, labels):
 
 if __name__ == "__main__":
     import argparse
-    from preprocessing import PROCESSED, ROOT
+    from preprocessing import PRICE_RESULTS, PROCESSED, VALIDATION_RESULTS
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compare-prices", action="store_true",
                         help="compare baseline and acquisition-price AUCs on the same validation cars")
     args = parser.parse_args()
 
-    directory = ROOT / "results" / "validation"
+    directory = VALIDATION_RESULTS
     labels = pd.read_csv(PROCESSED / "validation.csv", usecols=["RefId", "IsBadBuy"],
                          index_col="RefId")["IsBadBuy"]
-    price_dir = directory / "acquisition_prices"
+    price_dir = PRICE_RESULTS
     comparison = compare_families(price_dir, labels)
     output = price_dir / "auc.csv"
     if args.compare_prices:

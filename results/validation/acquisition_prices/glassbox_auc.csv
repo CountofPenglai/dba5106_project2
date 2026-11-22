@@ -1,0 +1,3 @@
+model,validation_auc
+Glassbox_L2,0.6591610438532904
+Glassbox_Logloss,0.6551505193912134

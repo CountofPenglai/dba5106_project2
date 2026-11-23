@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from business_loss import threshold_sensitivity
+from carvana.business_loss import threshold_sensitivity
 
 
 class BusinessLossTests(unittest.TestCase):

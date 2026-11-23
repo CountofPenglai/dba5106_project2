@@ -5,11 +5,11 @@ from scipy.special import expit, logit
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
-from business_loss import threshold_sensitivity
-from evaluation import _aligned, read_validation_scores
-from preprocessing import TARGET, prepare_feature_pair, read_development_rows
-from tree_models import FAMILIES, make_tree, risk_scores
-from tune_trees import FOLDS, OUT as TUNED, inputs
+from .business_loss import threshold_sensitivity
+from .evaluation import _aligned, read_validation_scores, validation_auc
+from .preprocessing import OUT, TARGET, prepare_feature_pair, read_development_rows
+from .training import refit_score
+from .tree_training import chronological_folds, save_tree_comparison
 
 EPS = 1e-6  # finite log odds for regression scores at or beyond 0 and 1
 
@@ -42,16 +42,11 @@ def select_method(raw, adjusted, slope):
     return "raw"
 
 
-def history_predictions(train, name, depth, regularization):
-    family = next(f for f, names in FAMILIES.items() if name in names)
+def history_predictions(train, name):
     blocks = []
-    for end, next_end in FOLDS:
-        history = train.loc[train.PurchDate <= end]
-        later = train.loc[(train.PurchDate > end) & (train.PurchDate <= next_end)]
-        x, y, v = inputs(family, history, later)
-        estimator = make_tree(name, depth, regularization)
-        estimator.fit(x, y)
-        blocks.append(later[[TARGET]].assign(score=risk_scores(estimator, v)))
+    for _, _, history, later in chronological_folds(train):
+        _, scores, _ = refit_score(name, history, later)
+        blocks.append(later[[TARGET]].assign(score=scores))
     return pd.concat(blocks, verify_integrity=True)
 
 
@@ -75,21 +70,21 @@ def reliability_plot(bins, path):
     fig.savefig(path, dpi=180)
 
 
-def main():
-    directory = TUNED / "calibration"
-    comparison = pd.read_csv(TUNED / "comparison.csv", index_col="model")
-    name = comparison.tuned_validation_auc.idxmax()
-    winner = comparison.loc[name]
+def validate():
     train, validation = read_development_rows()
-    oof = history_predictions(train, name, int(winner.depth), int(winner.regularization))
+    y = validation[TARGET]
+    all_scores = read_validation_scores(OUT, y)
+    ranking = validation_auc(y, all_scores)
+    ranking.to_csv(OUT / "six_model_auc.csv", index_label="model")
+    save_tree_comparison(ranking)
+    name = ranking.index[0]
+    scores = all_scores[name]
+    directory = OUT / "calibration"
+    oof = history_predictions(train, name)
     oof_logit = logit(probabilities(oof.score)).to_numpy().reshape(-1, 1)
     fit = LogisticRegression(C=1e6, tol=1e-10, max_iter=1000).fit(oof_logit, oof[TARGET])
     intercept, slope = float(fit.intercept_[0]), float(fit.coef_[0, 0])
 
-    y = validation[TARGET]
-    scores = read_validation_scores(TUNED, y)[name]
-    if not np.isclose(roc_auc_score(y, scores), winner.tuned_validation_auc, rtol=0, atol=1e-12):
-        raise ValueError("Saved validation scores do not match the tuned winner")
     _, prices = prepare_feature_pair(train, validation)
     results, groups, decisions = {}, [], []
     for method, a, b in [("raw", 0.0, 1.0), ("logistic", intercept, slope)]:
@@ -110,10 +105,21 @@ def main():
     summary.to_csv(directory / "metrics.csv")
     bins.to_csv(directory / "reliability.csv", index=False)
     policies.to_csv(directory / "thresholds.csv", index=False)
+    chosen = policies.loc[policies.selected_method].drop(columns=["method", "selected_method"]).copy()
+    chosen.insert(0, "validation_auc", ranking[name])
+    chosen.to_csv(OUT / "business_loss.csv", index=False)
     reliability_plot(bins, directory / "reliability.png")
-    print(summary.to_string())
-    print(policies[policies.selected_method].to_string(index=False))
+    return ranking
 
 
-if __name__ == "__main__":
-    main()
+def frozen_policy():
+    """Load the selected validation rule at full precision, including threshold ties."""
+    directory = OUT / "calibration"
+    metrics = pd.read_csv(directory / "metrics.csv", float_precision="round_trip")
+    thresholds = pd.read_csv(directory / "thresholds.csv", float_precision="round_trip")
+    calibration, = metrics.loc[metrics.selected].itertuples()
+    rule, = thresholds.loc[thresholds.selected_method & thresholds.bad_buy_loss_rate.eq(.2)
+                           & thresholds.normal_cost_usd.eq(900)].itertuples()
+    if (rule.model, rule.method) != (calibration.model, calibration.method):
+        raise ValueError("Threshold and calibration artifacts belong to different policies")
+    return calibration, rule

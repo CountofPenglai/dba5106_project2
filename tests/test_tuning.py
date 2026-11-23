@@ -2,13 +2,13 @@ import unittest
 
 import pandas as pd
 
-from preprocessing import ACQUISITION_PRICES, FEATURES, NUMERIC, TRIM_FIELDS, prepare_feature_pair
-from tune_trees import choose_finalist, shortlist
+from carvana.preprocessing import ACQUISITION_PRICES, FEATURES, NUMERIC, prepare_feature_pair
+from carvana.tree_training import choose_finalist, shortlist
 
 
 class TuningTests(unittest.TestCase):
     def test_fold_statistics_come_only_from_earlier_cars(self):
-        history = pd.DataFrame("X", columns=FEATURES + TRIM_FIELDS, index=range(20))
+        history = pd.DataFrame("X", columns=FEATURES, index=range(20))
         history["Model"] = "COMMON"
         history[NUMERIC] = 5
         history[ACQUISITION_PRICES] = 100

@@ -1,13 +1,30 @@
-"""Select a global skip-bid threshold on saved validation scores. Run: python business_loss.py"""
+"""Auction-dollar loss for validation threshold selection and frozen-policy evaluation."""
 
 import numpy as np
 import pandas as pd
 
-from evaluation import _aligned, read_validation_scores, validation_auc
-from preprocessing import PRICE_RESULTS, load_development
+from .evaluation import _aligned
 
 AUCTION = "MMRAcquisitionAuctionAveragePrice"
 RETAIL = "MMRAcquisitionRetailAveragePrice"
+
+
+def mistake_costs(y, prices, rate, normal_cost):
+    """Return the cost of each error in integer cents, rounded per car."""
+    if not prices.index.equals(y.index):
+        raise ValueError("Quotes must share the validation labels' RefIds in order")
+    quotes = prices[[AUCTION, RETAIL]].to_numpy(dtype=float)
+    if not np.isfinite(quotes).all() or (quotes <= 0).any():
+        raise ValueError("Cost evaluation requires finite, positive acquisition quotes")
+    if not np.isfinite(normal_cost) or normal_cost < 0:
+        raise ValueError("Normal cost must be finite and nonnegative")
+
+    if not np.isfinite(rate) or not 0 <= rate <= 1:
+        raise ValueError("Bad-buy loss rate must be between zero and one")
+    auction, retail = quotes.T
+    wrong_buy = np.rint(auction * rate * 100).astype(np.int64)
+    wrong_skip = np.rint(100 * np.maximum(0, retail - auction - normal_cost)).astype(np.int64)
+    return wrong_buy, wrong_skip
 
 
 def threshold_sensitivity(y, scores, prices, *, loss_rates=(0.10, 0.20, 0.30), normal_cost=900):
@@ -17,14 +34,6 @@ def threshold_sensitivity(y, scores, prices, *, loss_rates=(0.10, 0.20, 0.30), n
     threshold (fewer skipped bids). Charge each mistake to the nearest cent.
     """
     _aligned(y, scores)
-    if not prices.index.equals(y.index):
-        raise ValueError("Quotes must share the validation labels' RefIds in order")
-    quotes = prices[[AUCTION, RETAIL]].to_numpy(dtype=float)
-    if not np.isfinite(quotes).all() or (quotes <= 0).any():
-        raise ValueError("Cost evaluation requires finite, positive acquisition quotes")
-    if not np.isfinite(normal_cost) or normal_cost < 0:
-        raise ValueError("Normal cost must be finite and nonnegative")
-
     # Buy all at +inf. As the threshold falls, all cars tied at a score switch to skip.
     order = np.argsort(-scores.to_numpy(), kind="stable")
     risk = scores.to_numpy()[order]
@@ -33,20 +42,17 @@ def threshold_sensitivity(y, scores, prices, *, loss_rates=(0.10, 0.20, 0.30), n
     thresholds = np.r_[np.inf, risk[group_ends - 1]]
 
     bad = y.to_numpy()[order] == 1
-    auction, retail = quotes[order].T
-    missed_profit = np.rint(100 * np.maximum(0, retail - auction - normal_cost)).astype(np.int64)
 
     def prefix_sums(values):
         return np.r_[0, np.cumsum(values)][cutoffs]
 
     skipped_good = prefix_sums(~bad)
     bought_bad = bad.sum() - prefix_sums(bad)
-    skipped_good_loss = prefix_sums(np.where(bad, 0, missed_profit))
     rows = []
     for rate in loss_rates:
-        if not np.isfinite(rate) or not 0 <= rate <= 1:
-            raise ValueError("Bad-buy loss rate must be between zero and one")
-        bad_loss = np.where(bad, np.rint(auction * rate * 100).astype(np.int64), 0)
+        wrong_buy, wrong_skip = mistake_costs(y, prices, rate, normal_cost)
+        skipped_good_loss = prefix_sums(np.where(bad, 0, wrong_skip[order]))
+        bad_loss = np.where(bad, wrong_buy[order], 0)
         bought_bad_loss = bad_loss.sum() - prefix_sums(bad_loss)
         total = skipped_good_loss + bought_bad_loss
         best = int(total.argmin())
@@ -61,20 +67,3 @@ def threshold_sensitivity(y, scores, prices, *, loss_rates=(0.10, 0.20, 0.30), n
             "buy_all_loss_usd": total[0] / 100, "skip_all_loss_usd": total[-1] / 100,
         })
     return pd.DataFrame(rows)
-
-
-def main():
-    directory = PRICE_RESULTS
-    _, _, prices, labels = load_development()
-    scores = read_validation_scores(directory, labels)
-    ranking = validation_auc(labels, scores)
-    model = ranking.index[0]
-    report = threshold_sensitivity(labels, scores[model], prices)
-    report.insert(0, "model", model)
-    report.insert(1, "validation_auc", ranking[model])
-    report.to_csv(directory / "business_loss.csv", index=False)
-    print(report.to_string(index=False))
-
-
-if __name__ == "__main__":
-    main()

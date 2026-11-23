@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from calibration import calibration_metrics, probabilities, select_method
+from carvana.calibration import calibration_metrics, probabilities, select_method
 
 
 class CalibrationTests(unittest.TestCase):

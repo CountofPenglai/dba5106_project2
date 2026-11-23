@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from tree_shap import global_importance, select_cases
+from carvana.tree_shap import global_importance, select_cases
 
 
 class TreeShapTests(unittest.TestCase):
